@@ -46,6 +46,14 @@ public abstract class ServiceFactory {
 
         GraniteContext context = GraniteContext.getCurrentInstance();
 
+        // Simplified lookup of service factory, if configured in web.xml
+        String serviceFactoryClass = context.getInitialisationMap().get("granite.ServiceFactory");
+        if (serviceFactoryClass != null) {
+            log.debug(">> Found factory class from web.xml: %s", serviceFactoryClass);
+
+            return getServiceFactory(context, serviceFactoryClass);
+        }
+
         String messageType = request.getClass().getName();
         String destinationId = request.getDestination();
 
@@ -62,6 +70,32 @@ public abstract class ServiceFactory {
         String key = ServiceFactory.class.getName() + '.' + factoryId;
 
         return getServiceFactory(cache, context, factoryId, key);
+    }
+
+    /**
+     * Simplified lookup method that does not need servicesConfig which occasionally returns illegal destination that has no factory set.
+     * <p/>
+     * This method uses factory class defined in web.xml init param. Factories defined like this will receive an empty XMap in their configure call, since no services config file is being used.
+     * <p/>
+     * It does cache the resulting factory, but does not use a lock to create it. This means that first time, multiple service factories might be created. But since they are of the same class and that factory is assumed to be stateless, that only causes minimal overhead and no side effects.
+     */
+    private static ServiceFactory getServiceFactory(GraniteContext context, String serviceFactoryClass) {
+        Map<String, Object> cache = context.getApplicationMap();
+
+        ServiceFactory factory = (ServiceFactory) cache.get(serviceFactoryClass);
+        if (factory == null) {
+            try {
+                Class<? extends ServiceFactory> clazz = ClassUtil.forName(serviceFactoryClass, ServiceFactory.class);
+                factory = clazz.newInstance();
+                factory.configure(XMap.EMPTY_XMAP);
+            } catch (Exception e) {
+                throw new ServiceException("Could not instantiate factory: " + serviceFactoryClass, e);
+            }
+            cache.put(serviceFactoryClass, factory);
+            log.debug(">> Instantiated and cached factory from web.xml: %s, %s", serviceFactoryClass, factory);
+        }
+
+        return factory;
     }
 
     private static ServiceFactory getServiceFactory(Map<String, Object> cache, GraniteContext context, String factoryId, String key) {
@@ -109,7 +143,7 @@ public abstract class ServiceFactory {
         if (sServiceExceptionHandler != null) {
             try {
             	if (Boolean.TRUE.toString().equals(enableLogging) || Boolean.FALSE.toString().equals(enableLogging))
-                    this.serviceExceptionHandler = (ServiceExceptionHandler)ClassUtil.newInstance(sServiceExceptionHandler.trim(), 
+                    this.serviceExceptionHandler = (ServiceExceptionHandler)ClassUtil.newInstance(sServiceExceptionHandler.trim(),
                     		new Class<?>[] { boolean.class }, new Object[] { Boolean.valueOf(enableLogging) });
             	else
             		this.serviceExceptionHandler = (ServiceExceptionHandler)ClassUtil.newInstance(sServiceExceptionHandler.trim());
